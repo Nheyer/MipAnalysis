@@ -1,10 +1,11 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Name: Taylor Real & Nicholas Heyer (tdreal)
 # Group Members: NOTCH2NL Group
 # note the script is compatible with both python 2.7 and 3.5+
 
 import sys
 import pysam
+import os
 import matplotlib.pyplot as plt
 import numpy as np
 from operator import add
@@ -53,17 +54,22 @@ def parse_fasta(fasta_path):
 class ARGS:
     def __init__(self):
         self.make_graphs = True
+        self.trigger_split = False
+        self.bwa_ref = ""
+        self.bx_len = -1
         self.output_file = sys.stdout
         self.out_path = "/dev/stdout"
         self.input_files = []
+        self.infq_pair = []
         self.ref_path = ""
         self.log_file = sys.stderr
         self.log_path = "/dev/stderr"
         self.bam_path = ""
+        self.threads = 10
 
     def io(self):
         help_str = "Usage :\n"
-        help_str += "Python MipAnalysis.py -i <path to bam> \n"
+        help_str += "Python3 MipAnalysis.py -i <path to bam> \n"
         help_str += "-h\t--help\t\tPrint detailed help information\n"
         if len(sys.argv) < 2:
             sys.stderr.write(help_str)
@@ -72,12 +78,15 @@ class ARGS:
             help_str += "~"
         help_str += "\nFlags:\n"
         help_str += "-i\t--input      \t[path],[path]\tA comma separated list of paths to the sorted\n"
-        help_str += "  \t             \t      \tindexed bam file to analyse\n"
+        help_str += "  \t             \t      \tindexed bams or fastqs with r1:r2,r1:r2...  file to analyse\n"
+        help_str += "  \t             \t      \tnote to input fastqs you need to supply -R and -x\n"
         help_str += "-g\t--no-graphics\t[bool]\tIf this flag is included the program sill skip generating graphics\n"
         help_str += "-o\t--output     \t[path]\tPath to output information, default will print to stdout\n"
         help_str += "-b\t--out-bam    \t[path]\tPath to a bam file to put all novel reads in a region checked\n"
         help_str += "-r\t--ref        \t[path]\tPath to a fasta with read name being location (samtools like) and a \n"
         help_str += "  \t             \t      \tcomment of what to call it\n"
+        help_str += "-R\t--mem-ref    \t[path]\tpath to align input fastqs to\n"
+        help_str += "-x\t--bx-len     \t[int] \tthe lenght of the BX to strip from input fastq files\n"
         i = 1
         while i < len(sys.argv):
             if sys.argv[i] in ['-i', "--input"]:
@@ -102,10 +111,33 @@ class ARGS:
                 i = i + 2
             elif sys.argv[i] in ['-b', "--out-bam"]:
                 self.bam_path = sys.argv[i + 1]
-                i = i + 1
+                i = i + 2
+            elif sys.argv[i] in ['-R', "--mem-ref"]:
+                self.bwa_ref = sys.argv[i + 1]
+                self.trigger_split = True
+                i = i + 2
+            elif sys.argv[i] in ['-x', "--bx-len"]:
+                self.bx_len = sys.argv[i + 1]
+                self.trigger_split = True
+                i = i + 2
+            elif sys.argv[i] in ['-t', "--threads"]:
+                self.threads = sys.argv[i + 1]
+                i = i + 2
             else:
                 sys.stderr.write("Unrecognised input:\t" + sys.argv[i] + "\n")
                 i = i + 1
+        if self.trigger_split:
+            if self.bwa_ref == "" or self.bx_len == -1 or ':' not in self.input_files[0]:
+                print("Attempted to input raw files, without -x or -R\n \
+                      OR you added those tags erroneously when trying to use pre-aligned bams")
+                sys.exit(-3) ## crash becouse we are missing inputs we expect
+            temp = self.input_files
+            self.input_files = []
+            for pair in temp:
+                fq_pair = pair.split(":")
+                self.infq_pair.append(fq_pair)
+                # assume it is named "somthing.fastq" and make the bams be "somthing.bam"
+                self.input_files.append(fq_pair[0].rstrip("fastq") + "bam")
         return True
 
 
@@ -254,9 +286,24 @@ def main():
     for known_var in seq_nm.keys():
         arguments.output_file.write(seq_nm[known_var] + "\t")
     # finished outputing a header, with all values from the fasta
-    for file in arguments.input_files:
+    for fidx in range(len(arguments.input_files)):
+        if arguments.trigger_split:
+            os.system("FastqMipTag " + arguments.infq_pair[fidx][0] +
+                    " " + arguments.infq_pair[fidx][1] + " _tagged.fq "
+                    + str(arguments.bx_len))
+            os.system("bwa mem -t " + str(arguments.threads) + " " +
+                      arguments.bwa_ref + " " +
+                      arguments.infq_pair[fidx][0] + "_tagged.fq " + ## read one tagged
+                      arguments.infq_pair[fidx][0] + "_tagged.fq " + ## read two tagged
+                      ">" + arguments.input_files[fidx].rstrip("bam")+"sam")
+            os.system("samtools view -Sb@ "+arguments.threads + " " + arguments.input_files[fidx].rstrip("bam")+"sam" +
+                      " -o " + arguments.input_files[fidx].rstrip("bam") + "unsorted.bam")
+            os.system("samtools sort -@ " + arguments.threads + " " +
+                      arguments.input_files[fidx].rstrip("bam") + "unsorted.bam" +
+                      " -o " + arguments.input_files[fidx])
+            os.system("samtools index " + arguments.input_files[fidx])
         arguments.output_file.write("\n")
-        run_all(run_data, seq_nm, file, arguments)
+        run_all(run_data, seq_nm, arguments.input_files[fidx], arguments)
 
     arguments.output_file.close()
     sys.stderr.write("Variant Analysis Completed!\nAll Graphs Saved as .pdf.\n")
