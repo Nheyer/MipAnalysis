@@ -1,5 +1,5 @@
 # MipAnalysis
-Programs for analyzing the results of a molecular inversion Probe run, designed tor the NOTCH2NL genes 
+Programs for analyzing the results of a molecular inversion Probe run, designed for the NOTCH2NL genes 
 
 ## INSTALATION:
 
