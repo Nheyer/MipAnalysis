@@ -101,7 +101,7 @@ class read {
         // add tags and modify sequence
         }
         void get_read(std::ofstream & out){
-            out << name << "\t" << remaining;
+            out << name << "-" << remaining;
             if (qr_tag >= 0){
                 out << "\t" << "RQ:i:" << qr_tag;
             }
