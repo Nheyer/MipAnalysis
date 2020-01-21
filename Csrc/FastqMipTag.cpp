@@ -91,7 +91,7 @@ class read {
                 r2.seq = 'N' + r2.seq;
                 r2.q_arr = 'B' + r2.q_arr;
             }
-        } else {
+        } else  if (x == y){
             // equal so no fix needed
             seq = seq.substr(x, seq.length());
             q_arr = q_arr.substr(x, q_arr.length());
