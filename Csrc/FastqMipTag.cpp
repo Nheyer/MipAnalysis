@@ -54,7 +54,7 @@ class read {
             }
              qr_tag = sum_q / seq.length();
         }
-        void get_bx(int x ,read& r2){
+        void get_bx(int x , int y,read& r2){
         if(x < 0){
             return;
         } else {
@@ -68,14 +68,14 @@ class read {
                 }
             }
         }
-        bx_tag = seq.substr(0, x) + "-MIP-" + r2.seq.substr(0, x);
+        bx_tag = seq.substr(0, x) + "-MIP-" + r2.seq.substr(0, y);
         r2.bx_tag = bx_tag;
         seq = seq.substr(x, seq.length());
-        r2.seq = r2.seq.substr(x, r2.seq.length());
-        bx_qual = q_arr.substr(0, x) + "-MIP-" + r2.q_arr.substr(0, x);
+        r2.seq = r2.seq.substr(y, r2.seq.length());
+        bx_qual = q_arr.substr(0, x) + "-MIP-" + r2.q_arr.substr(0, y);
         r2.bx_qual = bx_qual;
-        q_arr = q_arr.substr(x, q_arr.length());
-        r2.q_arr = r2.q_arr.substr(x, r2.q_arr.length());
+        q_arr = q_arr.substr(y, q_arr.length());
+        r2.q_arr = r2.q_arr.substr(y, r2.q_arr.length());
         }
         void get_read(std::ofstream & out){
             out << name;// << "\t" << remaining;
@@ -99,9 +99,11 @@ class read {
 
 int main(int argc, char ** argv) {
     if(argc < 3) {
-        std::cerr << "Usage: fastRQ input1.fastq input2.fastq [output_modification] <int> \n"
+        std::cerr << "Usage: fastRQ input1.fastq input2.fastq [output_modification] <int> <int> \n"
                   << "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
-                  << "NOTE: If the int givin is -1 or omited no barcode will be generated"; 
+                  << "first two inputs should be the fastq files of read one and read two\n"
+                  << "then the modification you wish to be added to the file\n"
+                  << "and then finally two ints for bx length on R1 and R2 respectively\n";
     }
     std::cout << "Obtained " << argc << " inputs\n";
     std::string name_line[2] = {};
@@ -112,7 +114,7 @@ int main(int argc, char ** argv) {
     std::ofstream output[2];
     bool interleaf = false;
     bool open ;
-    std::cout << "Attempthing to open " << argv[1] << " and " <<  argv[2] << " as inputs\n" ;
+    std::cout << "Atempthing to open " << argv[1] << " and " <<  argv[2] << " as inputs\n" ;
     input[0].open(argv[1]);
     input[1].open(argv[2]);
     std::cout << "Opened file " << argv[1] << " and " << argv[2] << " for input\n";
@@ -129,9 +131,11 @@ int main(int argc, char ** argv) {
         open = true;
     }
     long long unsigned int count = 0;
-    int x = -1;
+    int r1_bx_length = -1;
+    int r2_bx_length = -1;
     if(argc > 4){
-        x = atoi(argv[4]);
+        r1_bx_length = atoi(argv[4]);
+        r2_bx_length = atoi(argv[5]);
     }
     if(input[0].good() && input[1].good() && output[0].good() && open ){
         std::cerr << "All Files were opened as expected\n" ;
@@ -162,7 +166,7 @@ int main(int argc, char ** argv) {
 #if DEBUG
             std::cerr << "suming qulaity lines\n";
 #endif
-            read1.get_bx(x , read2);
+            read1.get_bx(r1_bx_length, r2_bx_length, read2);
 
 #if DEBUG
             std::cerr << "riping off " << x << "bases as our barcode!";
