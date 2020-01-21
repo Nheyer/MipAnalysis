@@ -78,7 +78,7 @@ class read {
         r2.q_arr = r2.q_arr.substr(y, r2.q_arr.length());
         }
         void get_read(std::ofstream & out){
-            out << name;// << "\t" << remaining;
+            out << name << "\t" << remaining;
             if (qr_tag >= 0){
                 out << "\t" << "RQ:i:" << qr_tag;
             }
