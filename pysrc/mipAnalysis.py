@@ -55,7 +55,7 @@ def parse_fasta(fasta_path):
 class ARGS:
     def __init__(self):
         self.make_graphs = True
-        self.trigger_split = False2.2.77
+        self.trigger_split = False
         self.bwa_ref = ""
         self.bx_len = [-1,-1]
         self.output_file = sys.stdout
