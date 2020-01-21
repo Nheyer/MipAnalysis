@@ -1,0 +1,18 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+/home/sheepless/CLionProjects/FastRQ/Csrc/FastqMipTag.cpp
+iostream
+-
+fstream
+-
+string
+-
+stdlib.h
+-
+

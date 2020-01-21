@@ -1,0 +1,3 @@
+/home/sheepless/CLionProjects/MipAnalysis/CMakeFiles/rebuild_cache.dir
+/home/sheepless/CLionProjects/MipAnalysis/CMakeFiles/FastqMipTag.dir
+/home/sheepless/CLionProjects/MipAnalysis/CMakeFiles/edit_cache.dir

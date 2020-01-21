@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Name: Taylor Real & Nicholas Heyer (tdreal)
 # Group Members: NOTCH2NL Group
-# note the script is compatible with both python 2.7 and 3.5+
+# note the script is compatible with  3.5+
 
 import sys
 import pysam
@@ -9,6 +9,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 from operator import add
+import fuzzywuzzy as fz
 
 
 def add_seq(dict, region, ts):
@@ -54,9 +55,9 @@ def parse_fasta(fasta_path):
 class ARGS:
     def __init__(self):
         self.make_graphs = True
-        self.trigger_split = False
+        self.trigger_split = False2.2.77
         self.bwa_ref = ""
-        self.bx_len = -1
+        self.bx_len = [-1,-1]
         self.output_file = sys.stdout
         self.out_path = "/dev/stdout"
         self.input_files = []
@@ -117,7 +118,7 @@ class ARGS:
                 self.trigger_split = True
                 i = i + 2
             elif sys.argv[i] in ['-x', "--bx-len"]:
-                self.bx_len = sys.argv[i + 1]
+                self.bx_len = sys.argv[i + 1].split("-")
                 self.trigger_split = True
                 i = i + 2
             elif sys.argv[i] in ['-t', "--threads"]:
@@ -219,17 +220,25 @@ def analysis_of_region(alignmentfile, region, alleles, user_args, fq_dict, name)
         plt.savefig(name + "_" + region + "_coverage.pdf", format="pdf")
         plt.close()
     average_coverage = (float(sum(baseCoverage))/float(len(baseCoverage)))
+    print(region, average_coverage)
     # grab all the reads in the defined region
     for read in alignmentfile.fetch(contig, int(start_stop[0]), int(start_stop[1])):
         if read.is_read2:
             # if it is in read 2, check to see if the sequence is a match ofr any input allele
             found_read = False
+            i_idx = -1
+            best_rank = 50
             for i_allele in range(len(alleles)):
-                if alleles[i_allele] in read.query_sequence:
+                # calculate fussy string match between ref and alt best wins
+                curr_rank = fz.token_sort_ratio(alleles[i_allele],read.query_sequence)
+                if curr_rank >= best_rank :
+                    i_idx = i_allele
+                    best_rank = curr_rank
                     # if it is a match for any of them try and add it to the proper set and a universal set
-                    if "N" not in read.get_tag("BX"):
-                        BXs[i_allele].add(read.get_tag("BX"))
-                        all_bx.add(read.get_tag("BX"))
+            if "N" not in read.get_tag("BX") and i_idx > -1 :
+                BXs[i_idx].add(read.get_tag("BX"))
+                all_bx.add(read.get_tag("BX"))
+
             # if you find the allele we can go to the next read
 
             if not found_read:
@@ -290,7 +299,7 @@ def main():
         if arguments.trigger_split:
             os.system("FastqMipTag " + arguments.infq_pair[fidx][0] +
                     " " + arguments.infq_pair[fidx][1] + " _tagged.fq "
-                    + str(arguments.bx_len))
+                    + str(arguments.bx_len[0]) + " " + arguments.bx_len[1]  )
             os.system("bwa mem -t " + str(arguments.threads) + " " +
                       arguments.bwa_ref + " " +
                       arguments.infq_pair[fidx][0] + "_tagged.fq " + ## read one tagged
