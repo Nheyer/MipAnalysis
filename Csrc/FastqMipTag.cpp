@@ -69,13 +69,36 @@ class read {
             }
         }
         bx_tag = seq.substr(0, x) + "-MIP-" + r2.seq.substr(0, y);
-        r2.bx_tag = bx_tag;
-        seq = seq.substr(x, seq.length());
-        r2.seq = r2.seq.substr(y, r2.seq.length());
         bx_qual = q_arr.substr(0, x) + "-MIP-" + r2.q_arr.substr(0, y);
+        r2.bx_tag = bx_tag;
         r2.bx_qual = bx_qual;
-        q_arr = q_arr.substr(y, q_arr.length());
-        r2.q_arr = r2.q_arr.substr(y, r2.q_arr.length());
+        // see if it is asymetric, becouse if it is we need to fix it, to make bwa happy
+        if(x > y){
+            seq = seq.substr(x, seq.length());
+            q_arr = q_arr.substr(x, q_arr.length());
+            r2.seq = r2.seq.substr(y, r2.seq.length());
+            r2.q_arr = r2.q_arr.substr(y, r2.q_arr.length());
+            for (int i = 0; i < x - y; ++i) {
+                seq = 'N' + seq;
+                q_arr = 'B' + q_arr;
+            }
+        } else if(x < y){
+            seq = seq.substr(x, seq.length());
+            q_arr = q_arr.substr(x, q_arr.length());
+            r2.seq = r2.seq.substr(y, r2.seq.length());
+            r2.q_arr = r2.q_arr.substr(y, r2.q_arr.length());
+            for (int i = 0; i < y - x; ++i) {
+                r2.seq = 'N' + r2.seq;
+                r2.q_arr = 'B' + r2.q_arr;
+            }
+        } else {
+            // equal so no fix needed
+            seq = seq.substr(x, seq.length());
+            q_arr = q_arr.substr(x, q_arr.length());
+            r2.seq = r2.seq.substr(y, r2.seq.length());
+            r2.q_arr = r2.q_arr.substr(y, r2.q_arr.length());
+        }
+        // add tags and modify sequence
         }
         void get_read(std::ofstream & out){
             out << name << "\t" << remaining;
