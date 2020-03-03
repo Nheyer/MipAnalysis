@@ -6,10 +6,9 @@
 import sys
 import pysam
 import os
-import numpy as np
 import matplotlib.pyplot as plt
 from operator import add
-DEBUG = 1
+DEBUG = 0
 BITWISE_READ1 = 64
 BITWISE_READ2 = 128
 
@@ -123,7 +122,158 @@ class ARGS:
         return True
 
 
-# Takes BAM file data using Pysam ans outputs quality reports and graphs.
+def main():
+    arguments = ARGS()
+    arguments.io()
+    points_of_interest = parse_bed_vcf_pair(arguments.vcf_path, arguments.bed_path)
+    make_header(points_of_interest, arguments.output_file)
+    if DEBUG > 2:
+        print(points_of_interest)
+        sys.exit(0)
+    for file_index in range(len(arguments.input_files)):
+        if arguments.trigger_split:
+            make_bam(arguments, file_index)
+        run_file(points_of_interest, arguments.input_files[file_index], arguments)
+
+
+def parse_bed_vcf_pair(vcf_path,bed_path):
+    bed = open(bed_path, "r")
+    vcf = pysam.VariantFile(vcf_path)
+    regions_maped_to_vars = []
+
+    for line in bed:
+        # turn the bed into a list of [chr, start, stop]
+        current_region = line.rstrip("\n").split("\t")
+        variants = []
+        #rip id,ref bp, alt bp, and pos from the vcf (fix pos to 0 based idx)
+        for variant_record in vcf.fetch(contig = current_region[0], start = int(current_region[1]), end = int(current_region[2])):
+            variants.append([variant_record.id, variant_record.ref, variant_record.alleles[1], variant_record.pos - 1 ])
+        # combine it and format
+        if DEBUG > 1:
+            print(variants)
+        regions_maped_to_vars.append([current_region,combine_vars(variants, [["",{}]])])
+    return regions_maped_to_vars
+
+
+def combine_vars(raw_vars, current_mnp):
+    next_mnp = []
+    if len(raw_vars) == 0:
+        return current_mnp
+    else:
+        tigger_insertion = 0
+        for mnp in current_mnp:
+            tigger_insertion = False #assume it is not an insertion
+            #code indels
+            if len(raw_vars[0][1]) > len(raw_vars[0][2]) :
+                # refrence is greater then alt so it is a deletion
+                raw_vars[0][2] = "D" * (len(raw_vars[0][1]) - len(raw_vars[0][2]))
+                raw_vars[0][1] = raw_vars[0][1][1] ## code ref as the first bp in the deletion var
+                raw_vars[0][3] += 1 ## increase our position so we are ] into the deletion instead of the pos just before
+            elif len(raw_vars[0][1]) < len(raw_vars[0][2]) :
+                # alt is greater then ref so it is an insertion
+                tigger_insertion = True
+
+
+            # add a pair for ref of the snp we are on
+            next_mnp.append([mnp[0].lstrip('_')  + "_ref-" + raw_vars[0][0], mnp[1].copy()])
+            if tigger_insertion:
+                next_mnp[-1][1][str(raw_vars[0][3])] = raw_vars[0][1]
+            else:
+                next_mnp[-1][1][raw_vars[0][3]] = raw_vars[0][1]
+            # add one for the varriant
+            next_mnp.append([mnp[0].lstrip('_')  + "_var-" + raw_vars[0][0], mnp[1].copy()])
+            if tigger_insertion:
+                next_mnp[-1][1][str(raw_vars[0][3]) + "-I"+ str(len(raw_vars[0][2]) - len(raw_vars[0][1])) ] = raw_vars[0][2]
+            else:
+                next_mnp[-1][1][raw_vars[0][3]] = raw_vars[0][2]
+        # now remove it from the list and try to repeate the process
+        del raw_vars[0]
+        return combine_vars(raw_vars, next_mnp)
+
+
+def make_bam(arguments, fidx):
+    # make the bx tags on each fastq
+    os.system("FastqMipTag " + arguments.infq_pair[fidx][0] +
+              " " + arguments.infq_pair[fidx][1] + " _tagged.fq "
+              + str(arguments.bx_len[0]) + " " + arguments.bx_len[1] )
+    # create an initial alignment with bwa adding the tags
+    os.system("bwa mem -C -t " + arguments.threads + " " +
+              arguments.bwa_ref + " " +
+              arguments.infq_pair[fidx][0] + "_tagged.fq " + ## read one tagged
+              arguments.infq_pair[fidx][1] + "_tagged.fq " + ## read two tagged
+              ">" + "temp_file.sam")
+    # compress to bam, sort, index, then remove reads that don't map to a mip position
+    os.system("samtools view -Sb@ "+ arguments.threads + " temp_file.sam " +
+              " -o " + arguments.input_files[fidx].rstrip("bam") + "unsorted_raw.bam")
+    os.system("rm temp_file.sam &")
+    os.system("samtools sort -@ " + arguments.threads + " " +
+              arguments.input_files[fidx].rstrip("bam") + "unsorted_raw.bam" +
+              " -o " + arguments.input_files[fidx].rstrip("bam") + "sorted_raw.bam")
+    os.system("samtools index " + arguments.input_files[fidx].rstrip("bam") + "sorted_raw.bam")
+    os.system("samtools view  -q 60 -b@ "+arguments.threads + " -L " + arguments.bed_path + " "
+              + arguments.input_files[fidx].rstrip("bam") + "sorted_raw.bam -o "
+              + arguments.input_files[fidx].rstrip("bam") + "hits.bam")
+    # now unmap the bam into a ubam so we can use bowtie2 for more accurate mapping
+    os.system(arguments.picard + " RevertSam I=" + arguments.input_files[fidx].rstrip("bam") + "hits.bam O="
+              + arguments.input_files[fidx].rstrip(".bam") + "_unmapped.unsorted.bam")
+    os.system("samtools sort -n@ " + arguments.threads + " "
+              + arguments.input_files[fidx].rstrip(".bam") + "_unmapped.unsorted.bam -o"
+              + arguments.input_files[fidx].rstrip(".bam") + "_unmapped.sorted.bam")
+    os.system("samtools index -@ " + arguments.threads + " "
+              + arguments.input_files[fidx].rstrip(".bam") + "_unmapped.sorted.bam")
+    # now we will map with bowtie2, compress to a bam, sort and index the reads
+    os.system("bowtie2 -x " + arguments.bow_ref + " --end-to-end --no-mixed --no-discordant --align-paired-reads --preserve-tags --threads "
+              + arguments.threads + " -b " + arguments.input_files[fidx].rstrip(".bam") + "_unmapped.sorted.bam > "
+              + "temp_file.sam")
+    os.system("samtools view -q 30 -Sb@ " + arguments.threads + " temp_file.sam > "
+              + arguments.input_files[fidx].rstrip("bam") + "unsorted.bam")
+    os.system("rm temp_file.sam &")
+    os.system("samtools sort -@ " + arguments.threads + " " + arguments.input_files[fidx].rstrip("bam") + "unsorted.bam -o "
+              + arguments.input_files[fidx] )
+    os.system("samtools index " + arguments.input_files[fidx])
+
+
+def make_header(data_to_run, fl):
+    # write out the standard portion:
+    fl.write("File/Individual\tAverage Mapping Quality\tAverage Read Quality\tAverage Size of Reads\tAverage Coverage\tTotal Number of Barcodes")
+    # make the dynamic header
+    for region in data_to_run:
+        fl.write("\t%s:%s-%s_average_coverage" % tuple(region[0]))
+        fl.write("\t%s:%s-%s_total_barcodes" % tuple(region[0]))
+        for mnp_record in region[1]:
+            fl.write("\t%s_num_barcodes" % mnp_record[0])
+    fl.write("\n")
+
+
+def run_file(data_to_run, bam_file, user_args):
+    if DEBUG > 0:
+        print(bam_file)
+    # open the bam file and get some summery statistics
+    reader = pysam.AlignmentFile(bam_file, 'rb')
+    user_args.output_file.write("%s\t%.4f\t%.4f\t%.4f\t%.4f\t%8d" %
+                                runAnalysis(reader, user_args, bam_file.rstrip(".bam")))
+    # now run analysis on each of the regions of the bed
+    for region in data_to_run:
+        if DEBUG > 0:
+            print(region[0])
+            user_args.log_file.write("Working on region==>\t%s:%s-%s\n" % (region[0][0],region[0][1],region[0][2]))
+        # get a pileup of our region
+        a,t,c,g = reader.count_coverage(contig = region[0][0],
+                                        start = int(region[0][1]),
+                                        stop = int(region[0][2]),
+                                        quality_threshold = 0  )
+        # add all them into a list of depths
+        full_depth = list(map(add,map(add,a,t),map(add,c,g)))
+        if DEBUG > 0:
+            print("We have a total depth of %s" % sum(full_depth))
+        # make an average and print it !
+        user_args.output_file.write("\t%.2f" % (float(sum(full_depth))/(int(region[0][2])- int(region[0][1]))))
+        for value in get_stats_on_region(region, reader, user_args):
+            user_args.output_file.write("\t%s" % value)
+    user_args.output_file.write("\n")
+
+
+# Takes BAM file data using Pysam and outputs quality reports and graphs.
 def runAnalysis(myReader, user_args, name):
     # Performs analysis on the entire run.
 
@@ -176,86 +326,57 @@ def runAnalysis(myReader, user_args, name):
     return name, avMQ, avRQ, avRS, avCoverage, totBar
 
 
-def main():
-    arguments = ARGS()
-    arguments.io()
-    points_of_interest = parse_bed_vcf_pair(arguments.vcf_path, arguments.bed_path)
-    make_header(points_of_interest, arguments.output_file)
+def get_stats_on_region(region_to_run, bam, user_args):
+    # make things more readable
+    region_with_mnp = region_to_run[0]
+    mnps = region_to_run[1]
+    list_of_sets = [[set(), set()] for x in range(len(mnps))]
+    all_tags = set()
+    use_tags = set()
     if DEBUG > 2:
-        print(points_of_interest)
-        sys.exit(0)
-    for file_index in range(len(arguments.input_files)):
-        if arguments.trigger_split:
-            make_bam(arguments, file_index)
-        run_file(points_of_interest, arguments.input_files[file_index], arguments)
+        print(region_with_mnp)
+        print(mnps)
+    for sequence in bam.fetch(contig = region_with_mnp[0], start = int(region_with_mnp[1]), end = int(region_with_mnp[2])):
+        # get the tag once
+        try:
+            s_tag = sequence.get_tag("BX")
+            all_tags.add(s_tag)
+        except:
+            # if we can't get the BX tag throw error
+            user_args.log_file.write("Sequence is missing a BX tag, this shouldn't happen!!\n")
+            continue
+        i = 0 # we need an iterator
+        match_flag = False
+        rpos_seq , seq_map = seq_to_usable(sequence, user_args)
+        for mnp in mnps:
+            for snp_pos in mnp[1].keys():
+                if snp_pos in seq_map:
+                    if DEBUG > 1:
+                        print (mnp[0],mnp[1][snp_pos],rpos_seq[snp_pos])
+                    if mnp[1][snp_pos] == rpos_seq[snp_pos]:
+                        # we have a match flip the flag and continue
+                        match_flag = True
+                    else:
+                        # we dont match the motif if any is wrong, so keep going
+                        match_flag = False
+                        break
+                else:
+                    break## if we don't have the bp for one just skip the sequence
+
+            # when we match break before iterating so we can add properly
+            if match_flag:
+                use_tags.add(s_tag)
+                break
+            i = i + 1
+        if match_flag:
+            match_flag = False # reset this
+            list_of_sets[i][sequence.is_read1].add(s_tag)
+
+        if DEBUG > 0:
+            print("Invalid Tags:\t%s\nAll Tags:\t%s" % (len(all_tags-use_tags),len(all_tags)) )
+    return make_sure_r1_and_r2_agree(list_of_sets)
 
 
-
-def combine_vars(raw_vars, current_mnp):
-    next_mnp = []
-    if len(raw_vars) == 0:
-        return current_mnp
-    else:
-        tigger_insertion = 0
-        for mnp in current_mnp:
-            tigger_insertion = False #assume it is not an insertion
-            #code indels
-            if len(raw_vars[0][1]) > len(raw_vars[0][2]) :
-                # refrence is greater then alt so it is a deletion
-                raw_vars[0][2] = "D" * (len(raw_vars[0][1]) - len(raw_vars[0][2]))
-                raw_vars[0][1] = raw_vars[0][1][1] ## code ref as the first bp in the deletion var
-                raw_vars[0][3] += 1 ## increase our position so we are ] into the deletion instead of the pos just before
-            elif len(raw_vars[0][1]) < len(raw_vars[0][2]) :
-                # alt is greater then ref so it is an insertion
-                tigger_insertion = True
-
-
-            # add a pair for ref of the snp we are on
-            next_mnp.append([mnp[0].lstrip('_')  + "_ref-" + raw_vars[0][0], mnp[1].copy()])
-            if tigger_insertion:
-                next_mnp[-1][1][str(raw_vars[0][3])] = raw_vars[0][1]
-            else:
-                next_mnp[-1][1][raw_vars[0][3]] = raw_vars[0][1]
-            # add one for the varriant
-            next_mnp.append([mnp[0].lstrip('_')  + "_var-" + raw_vars[0][0], mnp[1].copy()])
-            if tigger_insertion:
-                next_mnp[-1][1][str(raw_vars[0][3]) + "-I"+ str(len(raw_vars[0][2]) - len(raw_vars[0][1])) ] = raw_vars[0][2]
-            else:
-                next_mnp[-1][1][raw_vars[0][3]] = raw_vars[0][2]
-        # now remove it from the list and try to repeate the process
-        del raw_vars[0]
-        return combine_vars(raw_vars, next_mnp)
-
-
-def parse_bed_vcf_pair(vcf_path,bed_path):
-    bed = open(bed_path, "r")
-    vcf = pysam.VariantFile(vcf_path)
-    regions_maped_to_vars = []
-
-    for line in bed:
-        # turn the bed into a list of [chr, start, stop]
-        current_region = line.rstrip("\n").split("\t")
-        variants = []
-        #rip id,ref bp, alt bp, and pos from the vcf (fix pos to 0 based idx)
-        for variant_record in vcf.fetch(contig = current_region[0], start = int(current_region[1]), end = int(current_region[2])):
-            variants.append([variant_record.id, variant_record.ref, variant_record.alleles[1], variant_record.pos - 1 ])
-        # combine it and format
-        if DEBUG > 1:
-            print(variants)
-        regions_maped_to_vars.append([current_region,combine_vars(variants, [["",{}]])])
-    return regions_maped_to_vars
-
-
-def make_header(data_to_run, fl):
-    # write out the standard portion:
-    fl.write("File/Individual\tAverage Mapping Quality\tAverage Read Quality\tAverage Size of Reads\tAverage Coverage\tTotal Number of Barcodes")
-    # make the dynamic header
-    for region in data_to_run:
-        fl.write("\t%s:%s-%s_average_coverage" % tuple(region[0]))
-        fl.write("\t%s:%s-%s_total_barcodes" % tuple(region[0]))
-        for mnp_record in region[1]:
-            fl.write("\t%s_num_barcodes" % mnp_record[0])
-    fl.write("\n")
 
 def seq_to_usable(seq, user_args):
     seq_str = seq.query_sequence
@@ -301,47 +422,6 @@ def seq_to_usable(seq, user_args):
     return seq_dict , new_map
 
 
-
-def get_stats_on_region(region_to_run, bam, user_args):
-    # make things more readable
-    region_with_mnp = region_to_run[0]
-    mnps = region_to_run[1]
-    list_of_sets = [[set(), set()] for x in range(len(mnps))]
-    if DEBUG > 2:
-        print(region_with_mnp)
-        print(mnps)
-    for sequence in bam.fetch(contig = region_with_mnp[0], start = int(region_with_mnp[1]), end = int(region_with_mnp[2])):
-        i = 0 # we need an iterator
-        match_flag = False
-        rpos_seq , seq_map = seq_to_usable(sequence, user_args)
-        for mnp in mnps:
-            for snp_pos in mnp[1].keys():
-                if snp_pos in seq_map:
-                    #print (mnp[0],mnp[1][snp_pos],rpos_seq[snp_pos], sequence.get_tag("BX"))
-                    if mnp[1][snp_pos] == rpos_seq[snp_pos]:
-                        # we have a match flip the flag and continue
-                        match_flag = True
-                    else:
-                        # we dont match the motif
-                        match_flag = False
-                        break
-                else:
-                    break## if we don't have the bp for one just skip the sequence
-
-            # when we match break before iterating so we can add properly
-            if match_flag:
-               break
-            i = i + 1
-        if match_flag:
-            match_flag = False # reset this
-            try:
-                list_of_sets[i][sequence.is_read1].add(sequence.get_tag("BX"))
-            except:
-                # if we can't get the BX tag throw error
-                sys.stderr.write("Sequence is missing a BX tag, this shouldn't happen!!\n")
-    return make_sure_r1_and_r2_agree(list_of_sets)
-
-
 ##TODO add disagreeing mip tags to an error file
 def make_sure_r1_and_r2_agree(nr1_r2):
     list_of_number_of_barcodes = [0]
@@ -360,76 +440,6 @@ def make_sure_r1_and_r2_agree(nr1_r2):
         list_of_number_of_barcodes.append(ubx)
 
     return list_of_number_of_barcodes
-
-
-def run_file(data_to_run, bam_file, user_args):
-    if DEBUG > 0:
-        print(bam_file)
-    # open the bam file and get some summery statistics
-    reader = pysam.AlignmentFile(bam_file, 'rb')
-    user_args.output_file.write("%s\t%.4f\t%.4f\t%.4f\t%.4f\t%8d" %
-                                runAnalysis(reader, user_args, bam_file.rstrip(".bam")))
-    # now run analysis on each of the regions of the bed
-    for region in data_to_run:
-        if DEBUG > 0:
-            print(region[0])
-            user_args.log_file.write("Working on region==>\t%s:%s-%s\n" % (region[0][0],region[0][1],region[0][2]))
-        # get a pileup of our region
-        a,t,c,g = reader.count_coverage(contig = region[0][0],
-                                        start = int(region[0][1]),
-                                        stop = int(region[0][2]),
-                                        quality_threshold = 0  )
-        # add all them into a list of depths
-        full_depth = list(map(add,map(add,a,t),map(add,c,g)))
-        if DEBUG > 0:
-            print("We have a total depth of %s" % sum(full_depth))
-        # make an average and print it !
-        user_args.output_file.write("\t%.2f" % (float(sum(full_depth))/(int(region[0][2])- int(region[0][1]))))
-        for value in get_stats_on_region(region, reader, user_args):
-            user_args.output_file.write("\t%s" % value)
-    user_args.output_file.write("\n")
-
-
-def make_bam(arguments, fidx):
-    # make the bx tags on each fastq
-    os.system("FastqMipTag " + arguments.infq_pair[fidx][0] +
-              " " + arguments.infq_pair[fidx][1] + " _tagged.fq "
-              + str(arguments.bx_len[0]) + " " + arguments.bx_len[1] )
-    # create an initial alignment with bwa adding the tags
-    os.system("bwa mem -C -t " + arguments.threads + " " +
-              arguments.bwa_ref + " " +
-              arguments.infq_pair[fidx][0] + "_tagged.fq " + ## read one tagged
-              arguments.infq_pair[fidx][1] + "_tagged.fq " + ## read two tagged
-              ">" + "temp_file.sam")
-    # compress to bam, sort, index, then remove reads that don't map to a mip position
-    os.system("samtools view -Sb@ "+ arguments.threads + " temp_file.sam " +
-              " -o " + arguments.input_files[fidx].rstrip("bam") + "unsorted_raw.bam")
-    os.system("rm temp_file.sam &")
-    os.system("samtools sort -@ " + arguments.threads + " " +
-              arguments.input_files[fidx].rstrip("bam") + "unsorted_raw.bam" +
-              " -o " + arguments.input_files[fidx].rstrip("bam") + "sorted_raw.bam")
-    os.system("samtools index " + arguments.input_files[fidx].rstrip("bam") + "sorted_raw.bam")
-    os.system("samtools view  -q 60 -b@ "+arguments.threads + " -L " + arguments.bed_path + " "
-              + arguments.input_files[fidx].rstrip("bam") + "sorted_raw.bam -o "
-              + arguments.input_files[fidx].rstrip("bam") + "hits.bam")
-    # now unmap the bam into a ubam so we can use bowtie2 for more accurate mapping
-    os.system(arguments.picard + " RevertSam I=" + arguments.input_files[fidx].rstrip("bam") + "hits.bam O="
-              + arguments.input_files[fidx].rstrip(".bam") + "_unmapped.unsorted.bam")
-    os.system("samtools sort -n@ " + arguments.threads + " "
-              + arguments.input_files[fidx].rstrip(".bam") + "_unmapped.unsorted.bam -o"
-              + arguments.input_files[fidx].rstrip(".bam") + "_unmapped.sorted.bam")
-    os.system("samtools index -@ " + arguments.threads + " "
-              + arguments.input_files[fidx].rstrip(".bam") + "_unmapped.sorted.bam")
-    # now we will map with bowtie2, compress to a bam, sort and index the reads
-    os.system("bowtie2 -x " + arguments.bow_ref + " --end-to-end --no-mixed --no-discordant --align-paired-reads --preserve-tags --threads "
-              + arguments.threads + " -b " + arguments.input_files[fidx].rstrip(".bam") + "_unmapped.sorted.bam > "
-              + "temp_file.sam")
-    os.system("samtools view -q 30 -Sb@ " + arguments.threads + " temp_file.sam > "
-              + arguments.input_files[fidx].rstrip("bam") + "unsorted.bam")
-    os.system("rm temp_file.sam &")
-    os.system("samtools sort -@ " + arguments.threads + " " + arguments.input_files[fidx].rstrip("bam") + "unsorted.bam -o "
-              + arguments.input_files[fidx] )
-    os.system("samtools index " + arguments.input_files[fidx])
 
 
 if __name__ == "__main__":
