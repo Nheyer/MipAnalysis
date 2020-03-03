@@ -18,17 +18,19 @@ class ARGS:
         self.make_graphs = True
         self.trigger_split = False
         self.bwa_ref = ""
+        self.bow_ref = ""
         self.bx_len = [-1,-1]
         self.output_file = sys.stdout
         self.out_path = "/dev/stdout"
         self.input_files = []
         self.infq_pair = []
-        self.vcf_path = "../test/n2nl_199950-200130_snps.vcf.gz"
-        self.bed_path = "../test/n2nl_region_199950-200130.bed"
+        self.vcf_path = ""
+        self.bed_path = ""
         self.log_file = sys.stderr
         self.log_path = "/dev/stderr"
         self.bam_path = ""
-        self.threads = 10
+        self.threads = "10"
+        self.picard = "java -jar ~/bin/picard/build/libs/picard.jar"
 
     def io(self):
         help_str = "Usage :\n"
@@ -48,12 +50,18 @@ class ARGS:
         help_str += "-b\t--out-bam    \t[path]\tPath to a bam file to put all novel reads in a region checked\n"
         help_str += "-v\t--vcf        \t[path]\tPath to a bgziped vcf with all variants you are interested in checking \n"
         help_str += "-d\t--bed        \t[path]\tPath to a bed file of the regions to check\n"
-        help_str += "-R\t--mem-ref    \t[path]\tpath to align input fastqs to\n"
-        help_str += "-x\t--bx-len     \t[int] \tthe lenght of the BX to strip from input fastq files\n"
+        help_str += "-R\t--mem-ref    \t[path]\tpath to align input fastqs to it should be somthing.fa\n"
+        help_str += "  \t--bow-ref    \t[path]\tif the bowtie2 index is in a different location put it here\n"
+        help_str += "-x\t--bx-len     \t[int]-[int] \tthe lenght of the BX to strip from input fastq files\n"
+        help_str += "-p\t--picard     \t[path]\tPath to the .jar file that contains picard default assumes picard was\n"
+        help_str += "  \t             \t      \tinstalled in ~/bin/\n"
         i = 1
         while i < len(sys.argv):
             if sys.argv[i] in ['-i', "--input"]:
                 self.input_files = sys.argv[i + 1].split(",")
+                i = i + 2
+            elif sys.argv[i] in ['-p', "--picard"]:
+                self.picard = "java -jar " + sys.argv[i + 1]
                 i = i + 2
             elif sys.argv[i] in ['-g', "--no-graphics"]:
                 self.make_graphs = False
@@ -79,12 +87,16 @@ class ARGS:
                 self.bwa_ref = sys.argv[i + 1]
                 self.trigger_split = True
                 i = i + 2
+            elif sys.argv[i] == "--bow-ref":
+                self.bow_ref = sys.argv[i + 1]
+                self.trigger_split = True
+                i = i + 2
             elif sys.argv[i] in ['-x', "--bx-len"]:
                 self.bx_len = sys.argv[i + 1].split("-")
                 self.trigger_split = True
                 i = i + 2
             elif sys.argv[i] in ['-t', "--threads"]:
-                self.threads = sys.argv[i + 1]
+                self.threads = str(sys.argv[i + 1])
                 i = i + 2
             elif sys.argv[i] in ['-d', "--bed"]:
                 self.bed_path = sys.argv[i + 1]
@@ -97,6 +109,10 @@ class ARGS:
                 print("Attempted to input raw files, without -x or -R\n \
                       OR you added those tags erroneously when trying to use pre-aligned bams")
                 sys.exit(-3) ## crash becouse we are missing inputs we expect
+            # by default assume bowtie2 reference is named the same and is in the same spot
+            if not self.bow_ref:
+                self.bow_ref = self.bwa_ref.rstrip("fasta").rstrip(".")
+                print(self.bow_ref, self.bwa_ref)
             temp = self.input_files
             self.input_files = []
             for pair in temp:
@@ -165,6 +181,9 @@ def main():
     arguments.io()
     points_of_interest = parse_bed_vcf_pair(arguments.vcf_path, arguments.bed_path)
     make_header(points_of_interest, arguments.output_file)
+    if DEBUG > 2:
+        print(points_of_interest)
+        sys.exit(0)
     for file_index in range(len(arguments.input_files)):
         if arguments.trigger_split:
             make_bam(arguments, file_index)
@@ -177,13 +196,32 @@ def combine_vars(raw_vars, current_mnp):
     if len(raw_vars) == 0:
         return current_mnp
     else:
+        tigger_insertion = 0
         for mnp in current_mnp:
+            tigger_insertion = False #assume it is not an insertion
+            #code indels
+            if len(raw_vars[0][1]) > len(raw_vars[0][2]) :
+                # refrence is greater then alt so it is a deletion
+                raw_vars[0][2] = "D" * (len(raw_vars[0][1]) - len(raw_vars[0][2]))
+                raw_vars[0][1] = raw_vars[0][1][1] ## code ref as the first bp in the deletion var
+                raw_vars[0][3] += 1 ## increase our position so we are ] into the deletion instead of the pos just before
+            elif len(raw_vars[0][1]) < len(raw_vars[0][2]) :
+                # alt is greater then ref so it is an insertion
+                tigger_insertion = True
+
+
             # add a pair for ref of the snp we are on
             next_mnp.append([mnp[0].lstrip('_')  + "_ref-" + raw_vars[0][0], mnp[1].copy()])
-            next_mnp[-1][1][raw_vars[0][3]] = raw_vars[0][1]
+            if tigger_insertion:
+                next_mnp[-1][1][str(raw_vars[0][3])] = raw_vars[0][1]
+            else:
+                next_mnp[-1][1][raw_vars[0][3]] = raw_vars[0][1]
             # add one for the varriant
             next_mnp.append([mnp[0].lstrip('_')  + "_var-" + raw_vars[0][0], mnp[1].copy()])
-            next_mnp[-1][1][raw_vars[0][3]] = raw_vars[0][2]
+            if tigger_insertion:
+                next_mnp[-1][1][str(raw_vars[0][3]) + "-I"+ str(len(raw_vars[0][2]) - len(raw_vars[0][1])) ] = raw_vars[0][2]
+            else:
+                next_mnp[-1][1][raw_vars[0][3]] = raw_vars[0][2]
         # now remove it from the list and try to repeate the process
         del raw_vars[0]
         return combine_vars(raw_vars, next_mnp)
@@ -202,7 +240,8 @@ def parse_bed_vcf_pair(vcf_path,bed_path):
         for variant_record in vcf.fetch(contig = current_region[0], start = int(current_region[1]), end = int(current_region[2])):
             variants.append([variant_record.id, variant_record.ref, variant_record.alleles[1], variant_record.pos - 1 ])
         # combine it and format
-        print(variants)
+        if DEBUG > 1:
+            print(variants)
         regions_maped_to_vars.append([current_region,combine_vars(variants, [["",{}]])])
     return regions_maped_to_vars
 
@@ -218,22 +257,63 @@ def make_header(data_to_run, fl):
             fl.write("\t%s_num_barcodes" % mnp_record[0])
     fl.write("\n")
 
+def seq_to_usable(seq, user_args):
+    seq_str = seq.query_sequence
+    cigar_info = seq.get_cigar_stats()
+    seq_list = []
+    previous_pos = '0'
+    seq_index = 0
+    seq_map = seq.get_reference_positions(full_length = True)
+    new_map = []
+    ins_len = 0
+    for pos in seq_map:
+        if pos is not None: # then we are not coding an insertion here sooo it is not needed to modify here
+            ins_len = 0
+            previous_pos = str(pos)
+            new_map.append(str(pos))
+            seq_list.append(seq_str[seq_index])
+        elif ins_len == 0: # we need to start an insertion
+            # make sure the ref will not map if we have an ins
+            seq_list[-1] = "This is not a bp pair"
+            new_map.append(previous_pos + "-I1")
+            seq_list.append(seq_str[seq_index-1] + seq_str[seq_index])
+            ins_len = 1
+        elif ins_len > 0: # we need to extend our insertion
+            ins_len += 1
+            new_map[-1] = previous_pos + "-I" + str(ins_len)
+            seq_list[-1] = seq_list[-1] + seq_str[seq_index]
+        # increment the position on the mapped sequence
+        seq_index += 1
+    seq_dict =  dict(zip(seq_map, seq_list))
+        #print(seq_str, "\n", seq_map)
+    if cigar_info[1][2] > 0 : # if this means the CIGAR string informs at least 1 deletion, we need to add the refs and note them for later
+        improper_pairs = [x[1]  for x in  seq.get_aligned_pairs() if x[0] is None]
+        del_len_ds = [x[1] * 'D' for x in seq.cigartuples if x[0] == 2]
+        if len(del_len_ds) != len(improper_pairs):
+            user_args.log_file.write("CIGAR ref/seq mismatch on sequence, likely a malformed bam!!\n")
+            sys.exit(-1)
+        else:
+            seq_dict.update(dict(zip(improper_pairs,del_len_ds))) ## add the dels
+            new_map.extend(improper_pairs)
+        if DEBUG > 2:
+            print(seq_dict,improper_pairs,del_len_ds)
 
-def get_stats_on_region(region_to_run, bam):
+    return seq_dict , new_map
+
+
+
+def get_stats_on_region(region_to_run, bam, user_args):
     # make things more readable
     region_with_mnp = region_to_run[0]
     mnps = region_to_run[1]
     list_of_sets = [[set(), set()] for x in range(len(mnps))]
-    if DEBUG > 0:
+    if DEBUG > 2:
         print(region_with_mnp)
         print(mnps)
     for sequence in bam.fetch(contig = region_with_mnp[0], start = int(region_with_mnp[1]), end = int(region_with_mnp[2])):
         i = 0 # we need an iterator
         match_flag = False
-        seq_str = sequence.query_sequence
-
-        seq_map = sequence.get_reference_positions()
-        rpos_seq = dict(zip(seq_map, seq_str))
+        rpos_seq , seq_map = seq_to_usable(sequence, user_args)
         for mnp in mnps:
             for snp_pos in mnp[1].keys():
                 if snp_pos in seq_map:
@@ -252,8 +332,6 @@ def get_stats_on_region(region_to_run, bam):
             if match_flag:
                break
             i = i + 1
-        if sequence.get_tag("BX") == "CGTCGC-MIP-CG":
-            print(mnp[0],mnps[i][0], rpos_seq[199991], rpos_seq[199996], len(seq_map), len(seq_str))
         if match_flag:
             match_flag = False # reset this
             try:
@@ -267,11 +345,20 @@ def get_stats_on_region(region_to_run, bam):
 ##TODO add disagreeing mip tags to an error file
 def make_sure_r1_and_r2_agree(nr1_r2):
     list_of_number_of_barcodes = [0]
-
+    true_sets = []
+    # joins the r1 and r2 iff they both have this mnp
     for r1, r2 in nr1_r2:
-        num_bx = len(r1.intersection(r2))
-        list_of_number_of_barcodes.append(num_bx)
-        list_of_number_of_barcodes[0] += num_bx
+        true_sets.append(r1.intersection(r2))
+        # make sure no barcode overlaps
+    for setp_idx in range(len(true_sets)):
+        unq_set = true_sets[setp_idx].copy()
+        for setc_idx in range(len(true_sets)):
+            if setp_idx != setc_idx:
+                unq_set.difference_update(true_sets[setc_idx])
+        ubx = len(unq_set)
+        list_of_number_of_barcodes[0] += ubx
+        list_of_number_of_barcodes.append(ubx)
+
     return list_of_number_of_barcodes
 
 
@@ -284,30 +371,65 @@ def run_file(data_to_run, bam_file, user_args):
                                 runAnalysis(reader, user_args, bam_file.rstrip(".bam")))
     # now run analysis on each of the regions of the bed
     for region in data_to_run:
-        ##TODO get average coverage here
-        user_args.output_file.write("\tNA")
-        for value in get_stats_on_region(region, reader):
+        if DEBUG > 0:
+            print(region[0])
+            user_args.log_file.write("Working on region==>\t%s:%s-%s\n" % (region[0][0],region[0][1],region[0][2]))
+        # get a pileup of our region
+        a,t,c,g = reader.count_coverage(contig = region[0][0],
+                                        start = int(region[0][1]),
+                                        stop = int(region[0][2]),
+                                        quality_threshold = 0  )
+        # add all them into a list of depths
+        full_depth = list(map(add,map(add,a,t),map(add,c,g)))
+        if DEBUG > 0:
+            print("We have a total depth of %s" % sum(full_depth))
+        # make an average and print it !
+        user_args.output_file.write("\t%.2f" % (float(sum(full_depth))/(int(region[0][2])- int(region[0][1]))))
+        for value in get_stats_on_region(region, reader, user_args):
             user_args.output_file.write("\t%s" % value)
     user_args.output_file.write("\n")
 
 
-###TODO add the bowtie2 portion to this !!!
 def make_bam(arguments, fidx):
+    # make the bx tags on each fastq
     os.system("FastqMipTag " + arguments.infq_pair[fidx][0] +
               " " + arguments.infq_pair[fidx][1] + " _tagged.fq "
-              + str(arguments.bx_len[0]) + " " + arguments.bx_len[1]  )
-    os.system("bwa mem -t " + str(arguments.threads) + " " +
+              + str(arguments.bx_len[0]) + " " + arguments.bx_len[1] )
+    # create an initial alignment with bwa adding the tags
+    os.system("bwa mem -C -t " + arguments.threads + " " +
               arguments.bwa_ref + " " +
               arguments.infq_pair[fidx][0] + "_tagged.fq " + ## read one tagged
-              arguments.infq_pair[fidx][0] + "_tagged.fq " + ## read two tagged
-              ">" + arguments.input_files[fidx].rstrip("bam")+"sam")
-    os.system("samtools view -Sb@ "+arguments.threads + " " + arguments.input_files[fidx].rstrip("bam")+"sam" +
-              " -o " + arguments.input_files[fidx].rstrip("bam") + "unsorted.bam")
+              arguments.infq_pair[fidx][1] + "_tagged.fq " + ## read two tagged
+              ">" + "temp_file.sam")
+    # compress to bam, sort, index, then remove reads that don't map to a mip position
+    os.system("samtools view -Sb@ "+ arguments.threads + " temp_file.sam " +
+              " -o " + arguments.input_files[fidx].rstrip("bam") + "unsorted_raw.bam")
+    os.system("rm temp_file.sam &")
     os.system("samtools sort -@ " + arguments.threads + " " +
-              arguments.input_files[fidx].rstrip("bam") + "unsorted.bam" +
-              " -o " + arguments.input_files[fidx])
+              arguments.input_files[fidx].rstrip("bam") + "unsorted_raw.bam" +
+              " -o " + arguments.input_files[fidx].rstrip("bam") + "sorted_raw.bam")
+    os.system("samtools index " + arguments.input_files[fidx].rstrip("bam") + "sorted_raw.bam")
+    os.system("samtools view  -q 60 -b@ "+arguments.threads + " -L " + arguments.bed_path + " "
+              + arguments.input_files[fidx].rstrip("bam") + "sorted_raw.bam -o "
+              + arguments.input_files[fidx].rstrip("bam") + "hits.bam")
+    # now unmap the bam into a ubam so we can use bowtie2 for more accurate mapping
+    os.system(arguments.picard + " RevertSam I=" + arguments.input_files[fidx].rstrip("bam") + "hits.bam O="
+              + arguments.input_files[fidx].rstrip(".bam") + "_unmapped.unsorted.bam")
+    os.system("samtools sort -n@ " + arguments.threads + " "
+              + arguments.input_files[fidx].rstrip(".bam") + "_unmapped.unsorted.bam -o"
+              + arguments.input_files[fidx].rstrip(".bam") + "_unmapped.sorted.bam")
+    os.system("samtools index -@ " + arguments.threads + " "
+              + arguments.input_files[fidx].rstrip(".bam") + "_unmapped.sorted.bam")
+    # now we will map with bowtie2, compress to a bam, sort and index the reads
+    os.system("bowtie2 -x " + arguments.bow_ref + " --end-to-end --no-mixed --no-discordant --align-paired-reads --preserve-tags --threads "
+              + arguments.threads + " -b " + arguments.input_files[fidx].rstrip(".bam") + "_unmapped.sorted.bam > "
+              + "temp_file.sam")
+    os.system("samtools view -q 30 -Sb@ " + arguments.threads + " temp_file.sam > "
+              + arguments.input_files[fidx].rstrip("bam") + "unsorted.bam")
+    os.system("rm temp_file.sam &")
+    os.system("samtools sort -@ " + arguments.threads + " " + arguments.input_files[fidx].rstrip("bam") + "unsorted.bam -o "
+              + arguments.input_files[fidx] )
     os.system("samtools index " + arguments.input_files[fidx])
-
 
 
 if __name__ == "__main__":

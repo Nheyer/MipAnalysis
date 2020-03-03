@@ -9,7 +9,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 from operator import add
-import fuzzywuzzy as fz
+from fuzzywuzzy import fuzz as fz
 
 
 def add_seq(dict, region, ts):
@@ -75,7 +75,7 @@ class ARGS:
         if len(sys.argv) < 2:
             sys.stderr.write(help_str)
             sys.exit(-1)
-        for i in range(80):
+        for i in range(100):
             help_str += "~"
         help_str += "\nFlags:\n"
         help_str += "-i\t--input      \t[path],[path]\tA comma separated list of paths to the sorted\n"
@@ -144,7 +144,6 @@ class ARGS:
 
 # Takes BAM file data using Pysam ans outputs quality reports and graphs.
 def runAnalysis(myReader, user_args, name):
-
     # Performs analysis on the entire run.
 
     mapQual = []
@@ -259,9 +258,7 @@ def analysis_of_region(alignmentfile, region, alleles, user_args, fq_dict, name)
     # we need to add the values now, so doing that here
     for i in range(len(alleles)):
         fq_dict[alleles[i]] = str(BX_freq[i])
-    fq_dict[region + "_cov"] = str(average_coverage)
-    fq_dict[region + "_bx"] = str(num_unq_bx)
-    return fq_dict
+    return average_coverage , num_unq_bx, fq_dict
 
 
 # runs all the analysis for a particular bam file
@@ -269,17 +266,17 @@ def run_all(run_dict, seq_dict, bam_file, arg):
     output_values = {}
     myReader = pysam.AlignmentFile(bam_file, 'rb')
     MQ, RQ, size, coverage, barcodes = runAnalysis(myReader, arg, bam_file.rstrip(".bam"))
-    arg.output_file.write("%s\t%.4f\t%.4f\t%.4f\t%.4f\t%8d" % (bam_file, MQ, RQ, size, coverage, barcodes))
+    arg.output_file.write("%s\t%.4f\t%.4f\t%.4f\t%.4f\t%8d\t" % (bam_file, MQ, RQ, size, coverage, barcodes))
     sys.stderr.write("QC for file " + bam_file + " Completed! \nRunning Variant Analysis...\n")
 
     for region in run_dict.keys():
-        output_values = analysis_of_region(myReader, region, run_dict[region],
+        avg_coverage, r_num_bx , output_values = analysis_of_region(myReader, region, run_dict[region],
                                            arg, output_values, bam_file.rstrip(".bam"))
-        arg.output_file.write(output_values[region + "_cov"] + "\t")
-        arg.output_file.write(output_values[region + "_bx"] + "\t")
+        arg.output_file.write( "%d\t" % r_num_bx)
+        arg.output_file.write("%.2f\t" % avg_coverage)
         sys.stderr.write("Finished analysing region " + region + "in file " + bam_file + "\n")
     for key in seq_dict:
-        arg.output_file.write("\t" + output_values[key])
+        arg.output_file.write(output_values[key] + "\t")
     myReader.close()
 
 
@@ -291,7 +288,7 @@ def main():
     arguments.output_file.write("File/Individual\t"       + "Average Mapping Quality\t" + "Average Read Quality\t" +
                                 "Average Size of Reads\t" + "Average Coverage\t"        + "Total Number of Barcodes\t")
     for region in run_data.keys():
-        arguments.output_file.write(region + "-number of barcodes \t" + region + "average coverage\t")
+        arguments.output_file.write(region + " number of barcodes \t" + region + " average coverage\t")
     for known_var in seq_nm.keys():
         arguments.output_file.write(seq_nm[known_var] + "\t")
     # finished outputing a header, with all values from the fasta
